@@ -4,5 +4,6 @@
 - 基本环境
 - [第二章 建立和运行一个内核模块](./doc/chapter-02.md)
 - [第三章 字符设备驱动：scull 的编译与测试](./doc/chapter-03.md)
+- [第四章 调试技术：procfs 与 seq_file](./doc/chapter-04.md)
 ## 基本环境
 基于qemu+linux-6.12.10+buildroot搭建的ldd3环境，具体搭建过程参考[ldd3-env](./doc/buildroot-ext4-migration.md.md)
