@@ -1,5 +1,11 @@
+#ifndef _SCULL_H_
+#define _SCULL_H_
 
+#include <linux/types.h>
+#include <linux/fs.h>
 #include <linux/cdev.h>
+#include <linux/semaphore.h>
+
 #define SCULL_MAJOR 0   /* dynamic major by default */
 
 #define SCULL_DEVS 4    /* scull0 through scull3 */
@@ -7,7 +13,9 @@
 #define SCULL_QUANTUM  4000 /* use a quantum size like scull */
 #define SCULL_QSET     500
 
-
+/* scullpipe（pipe.c） */
+#define SCULL_P_NR_DEVS 2
+#define SCULL_P_BUFFER  4000
 
 struct scull_qset {
 	void **data;
@@ -27,15 +35,33 @@ struct scull_dev {
 
 extern struct scull_dev *scull_devices;
 
-extern struct file_operations scull_fops;
-
 /*
  * The different configurable parameters
  */
-extern int scull_major;     /* main.c */
+extern int scull_major;
+extern int scull_minor;
 extern int scull_devs;
-extern int scull_order;
 extern int scull_qset;
+extern int scull_quantum;
+
+/*
+ * Prototypes for shared functions
+ */
+
+int     scull_p_init(dev_t dev);
+void    scull_p_cleanup(void);
+
+int     scull_access_init(dev_t dev);
+void    scull_access_cleanup(void);
+
+int     scull_trim(struct scull_dev *dev);
+
+ssize_t scull_read(struct file *filp, char __user *buf, size_t count,
+                   loff_t *f_pos);
+ssize_t scull_write(struct file *filp, const char __user *buf, size_t count,
+                    loff_t *f_pos);
+loff_t  scull_llseek(struct file *filp, loff_t off, int whence);
+long    scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 
 /*
  * Ioctl definitions
@@ -79,7 +105,4 @@ extern int scull_qset;
 
 #define SCULL_IOC_MAXNR 14
 
-
-
-
-
+#endif /* _SCULL_H_ */

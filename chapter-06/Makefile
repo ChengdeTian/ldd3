@@ -5,7 +5,7 @@
 MODULE_NAME := scull
 
 # 实际的源文件（与模块名不同名，所以要用 <模块名>-objs 指定）
-SRC_OBJ     := scull.o
+SRC_OBJ     := main.o pipe.o access.o
 
 # ================================================================
 # 调试开关
@@ -51,11 +51,33 @@ test:
 	@cp -f $(TEST_BIN) $(KODIR)
 	@echo "[install] $(TEST_BIN) -> $(KODIR)"
 
+# 访问控制设备（scullsingle/sculluid/scullwuid/sullpriv）测试
+TEST1_SRC := scull_test1.c
+TEST1_BIN := scull_test1
+
+test1:
+	$(CROSS_COMPILE)gcc -static -O2 -Wall -o $(TEST1_BIN) $(TEST1_SRC)
+	@mkdir -p $(KODIR)
+	@cp -f $(TEST1_BIN) $(KODIR)
+	@echo "[install] $(TEST1_BIN) -> $(KODIR)"
+
+# scullpipe 设备测试
+TEST2_SRC := scull_test2.c
+TEST2_BIN := scull_test2
+
+test2:
+	$(CROSS_COMPILE)gcc -static -O2 -Wall -o $(TEST2_BIN) $(TEST2_SRC)
+	@mkdir -p $(KODIR)
+	@cp -f $(TEST2_BIN) $(KODIR)
+	@echo "[install] $(TEST2_BIN) -> $(KODIR)"
+
+tests: test test1 test2
+
 clean:
 	$(MAKE) -C $(KERNELDIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) M=$(PWD) clean
-	rm -f $(TEST_BIN)
+	rm -f $(TEST_BIN) $(TEST1_BIN) $(TEST2_BIN)
 
-.PHONY: modules install test clean
+.PHONY: modules install test test1 test2 tests clean
 
 else
 
@@ -64,8 +86,8 @@ else
 obj-m += $(MODULE_NAME).o
 
 # 2) 用 <模块名>-objs 指定真正的中间对象（与模块名不同名时必须写）
-#    02_hellop.o 会由 02_hellop.c 编译而来，再链接进 hellop.ko
-# $(MODULE_NAME)-objs := $(SRC_OBJ)
+#    scull.o 由 scull.c 编译，access.o 由 access.c 编译，再链接成 scull.ko
+$(MODULE_NAME)-objs := $(SRC_OBJ)
 
 # 3) 调试宏：kbuild 只认 ccflags-y（CFLAGS 会被忽略）
 ifeq ($(DEBUG),y)

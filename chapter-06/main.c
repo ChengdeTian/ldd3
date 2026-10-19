@@ -7,7 +7,9 @@
 #include <linux/errno.h>	/* error codes */
 #include <linux/types.h>	/* size_t */
 #include <linux/fcntl.h>	/* O_ACCMODE */
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>	/* copy_to/from_user、access_ok（Linux 6 不再用 asm/uaccess.h） */
+#include <linux/ioctl.h>
+#include <linux/semaphore.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 
@@ -19,17 +21,23 @@ int scull_devs =    SCULL_DEVS;	/* number of bare scull devices */
 int scull_qset =    SCULL_QSET;
 int scull_quantum = SCULL_QUANTUM;
 
-module_param(scull_major, int, 0);
-module_param(scull_minor, int, 0);
-module_param(scull_devs, int, 0);
-module_param(scull_qset, int, 0);
-module_param(scull_quantum, int, 0);
+/*
+ * 权限位不能写 0：perm = 0 时内核根本不会创建
+ * /sys/module/scull/parameters/ 下的参数节点，测试程序就取不到实际生效的参数。
+ * 这里给 0444（只读），改参数仍然走 ioctl 或 insmod 命令行。
+ */
+module_param(scull_major, int, 0444);
+module_param(scull_minor, int, 0444);
+module_param(scull_devs, int, 0444);
+module_param(scull_qset, int, 0444);
+module_param(scull_quantum, int, 0444);
 MODULE_AUTHOR("Tcd");
+MODULE_DESCRIPTION("LDD3 scull sample driver (chapter-06: access control)");
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct scull_dev *scull_devices = NULL;
 
-/**
+/*
  * @brief 获取第n个qset
  *
  * @param dev 设备
@@ -44,6 +52,10 @@ static struct scull_qset *scull_follow(struct scull_dev *dev, int n)
     struct scull_qset *qs = dev->data;
     if (!qs) {
         qs = kmalloc(sizeof(struct scull_qset), GFP_KERNEL);
+        if (!qs) {
+            printk(KERN_ALERT "scull_follow: kmalloc failed\n");
+            return NULL;
+        }
         memset(qs, 0, sizeof(struct scull_qset));
         dev->data = qs;
     }
@@ -60,7 +72,7 @@ static struct scull_qset *scull_follow(struct scull_dev *dev, int n)
     }
     return qs;
 }
-static int scull_trim(struct scull_dev *dev)
+int scull_trim(struct scull_dev *dev)
 {
     struct scull_qset *dptr, *next;
     int qset_set = dev->qset;
@@ -85,7 +97,7 @@ static int scull_trim(struct scull_dev *dev)
     return 0;
 }
 
-static ssize_t scull_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
+ssize_t scull_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     struct scull_dev *dev = filp->private_data;
     struct scull_qset *qs;
@@ -126,7 +138,7 @@ out:
     return retval;
 }
 
-static ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
+ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     struct scull_dev *dev = filp->private_data;
     struct scull_qset *dptr;
@@ -178,26 +190,21 @@ out:
     return retval;
 }
 
-static long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
     long tmp;
     long retval = 0;
-    
+    int val;
+
     if (_IOC_TYPE(cmd) != SCULL_IOC_MAGIC)
         return -ENOTTY;
     if (_IOC_NR(cmd) > SCULL_IOC_MAXNR)
         return -ENOTTY;
 
-#if 0
-    if (_IOC_DIR(cmd) & _IOC_READ)
-        err = !access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd));
-    else if (_IOC_DIR(cmd) & _IOC_WRITE)
-        err = !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
-    if (err)
-        return -EFAULT;
-#endif
-    // 如果_IOC_SIZE(cmd)不为0，则检查arg起始的一段区间是否在用户空间上界之内，否则返回-EFAULT，
-    // 现在copy_form_user和copy_to_user都检查了，所以这里可以不用检查
+    /*
+     * Linux 6 的 access_ok() 只有两个参数（addr, size），
+     * VERIFY_READ/VERIFY_WRITE 早已删除。
+     */
     if (_IOC_SIZE(cmd) && !access_ok((void __user *)arg, _IOC_SIZE(cmd)))
         return -EFAULT;
 
@@ -207,16 +214,23 @@ static long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         scull_qset = SCULL_QSET;
         break;
 
+    /* ================= quantum ================= */
     case SCULL_IOCSQUANTUM:
         if (!capable(CAP_SYS_ADMIN)) // 只有root才能设置
             return -EPERM;
-        retval = __get_user(scull_quantum, (int __user *)arg);
+        if (__get_user(val, (int __user *)arg))
+            return -EFAULT;
+        if (val <= 0)               // quantum=0 会让 read/write 除零
+            return -EINVAL;
+        scull_quantum = val;
         break;
 
-    case SCULL_IOCTQUANTUM: // 告诉用户当前的quantum值
-        if (!capable(CAP_SYS_ADMIN)) // 只有root才能设置
+    case SCULL_IOCTQUANTUM: // arg 直接是值
+        if (!capable(CAP_SYS_ADMIN))
             return -EPERM;
-        scull_quantum = arg;
+        if ((int)arg <= 0)
+            return -EINVAL;
+        scull_quantum = (int)arg;
         break;
 
     case SCULL_IOCGQUANTUM:
@@ -225,21 +239,73 @@ static long scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
     case SCULL_IOCQQUANTUM:
         return scull_quantum;
-        
+
     case SCULL_IOCXQUANTUM:
-        if (!capable(CAP_SYS_ADMIN)) // 只有root才能设置
+        if (!capable(CAP_SYS_ADMIN))
             return -EPERM;
+        if (__get_user(val, (int __user *)arg))
+            return -EFAULT;
+        if (val <= 0)
+            return -EINVAL;
         tmp = scull_quantum;
-        retval = __get_user(scull_quantum, (int __user *)arg);
-        if (retval == 0)
-            retval = __put_user(tmp, (int __user *)arg);
+        scull_quantum = val;
+        retval = __put_user(tmp, (int __user *)arg);
         break;
-    
+
     case SCULL_IOCHQUANTUM: // 设置quantum值，并返回原来的值
-        if (!capable(CAP_SYS_ADMIN)) 
+        if (!capable(CAP_SYS_ADMIN))
             return -EPERM;
+        if ((int)arg <= 0)
+            return -EINVAL;
         tmp = scull_quantum;
-        scull_quantum = arg;
+        scull_quantum = (int)arg;
+        return tmp;
+
+    /* ================= qset ================= */
+    case SCULL_IOCSQSET:
+        if (!capable(CAP_SYS_ADMIN))
+            return -EPERM;
+        if (__get_user(val, (int __user *)arg))
+            return -EFAULT;
+        if (val <= 0)
+            return -EINVAL;
+        scull_qset = val;
+        break;
+
+    case SCULL_IOCTQSET:
+        if (!capable(CAP_SYS_ADMIN))
+            return -EPERM;
+        if ((int)arg <= 0)
+            return -EINVAL;
+        scull_qset = (int)arg;
+        break;
+
+    case SCULL_IOCGQSET:
+        retval = __put_user(scull_qset, (int __user *)arg);
+        break;
+
+    case SCULL_IOCQQSET:
+        return scull_qset;
+
+    case SCULL_IOCXQSET:
+        if (!capable(CAP_SYS_ADMIN))
+            return -EPERM;
+        if (__get_user(val, (int __user *)arg))
+            return -EFAULT;
+        if (val <= 0)
+            return -EINVAL;
+        tmp = scull_qset;
+        scull_qset = val;
+        retval = __put_user(tmp, (int __user *)arg);
+        break;
+
+    case SCULL_IOCHQSET:
+        if (!capable(CAP_SYS_ADMIN))
+            return -EPERM;
+        if ((int)arg <= 0)
+            return -EINVAL;
+        tmp = scull_qset;
+        scull_qset = (int)arg;
         return tmp;
 
     default:
@@ -271,13 +337,13 @@ static int scull_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
-/**
+/*
  * @brief 定位读写指针
  *
  * 注意：file_operations.llseek 为 NULL 时，内核会清掉 FMODE_LSEEK，
  *       用户态 lseek() 直接返回 -ESPIPE，定位读写就完全不可用。
  */
-static loff_t scull_llseek(struct file *filp, loff_t off, int whence)
+loff_t scull_llseek(struct file *filp, loff_t off, int whence)
 {
     struct scull_dev *dev = filp->private_data;
     loff_t newpos;
@@ -382,8 +448,8 @@ static int scull_seq_show(struct seq_file *s, void *v)
     struct scull_qset *d;
 	int i;
 
-    if (down_interruptible(&dev->sem))
-        return -ERESTARTSYS;
+	if (down_interruptible(&dev->sem))
+		return -ERESTARTSYS;
 
 	seq_printf(s, "\nDevice %i: qset %i, q %i, sz %li\n",
 			(int) (dev - scull_devices), dev->qset,
@@ -439,7 +505,8 @@ static struct file_operations scull_ops = {
 
 static int scull_setup_cdev(struct scull_dev *dev, int index)
 {
-    int err, devno = MKDEV(scull_major, scull_minor + index);
+    int err;
+    dev_t devno = MKDEV(scull_major, scull_minor + index);
 
     cdev_init(&dev->cdev, &scull_ops);
     dev->cdev.owner = THIS_MODULE;
@@ -454,32 +521,57 @@ static int scull_setup_cdev(struct scull_dev *dev, int index)
 static int __init scull_init(void)
 {
     int result, i;
-    dev_t dev = 0;
+    dev_t dev;
+
+    if (scull_devs <= 0)
+        return -EINVAL;
 
     if (scull_major) {
-        dev= MKDEV(scull_major, scull_minor);
+        dev = MKDEV(scull_major, scull_minor);
         result = register_chrdev_region(dev, scull_devs, "scull");
     } else {
         result = alloc_chrdev_region(&dev, scull_minor, scull_devs, "scull");
-        scull_major = MAJOR(dev);
+        if (result == 0) {
+            scull_major = MAJOR(dev);
+            scull_minor = MINOR(dev);
+        }
     }
     if (result < 0) {
         printk(KERN_ALERT "scull: can't get major %d\n", scull_major);
         return result;
     }
-    scull_devices = kmalloc(scull_devs * sizeof(struct scull_dev), GFP_KERNEL);
+
+    scull_devices = kcalloc(scull_devs, sizeof(struct scull_dev), GFP_KERNEL);
     if (!scull_devices) {
         result = -ENOMEM;
         goto fail_malloc;
     }
-    memset(scull_devices, 0, scull_devs*sizeof (struct scull_dev));
 
     for (i = 0; i < scull_devs; i++) {
         scull_devices[i].quantum = scull_quantum;
         scull_devices[i].qset = scull_qset;
         sema_init(&scull_devices[i].sem, 1);
-        scull_setup_cdev(scull_devices + i, i);
+        result = scull_setup_cdev(scull_devices + i, i);
+        if (result)
+            goto fail_cdev;
     }
+
+    /*
+     * 设备号排布：scull0..N-1 → scullpipe → 四个访问控制设备。
+     * 每一段都必须接在前一段之后，不能直接复用起始设备号。
+     */
+    dev = MKDEV(scull_major, scull_minor + scull_devs);
+
+    result = scull_p_init(dev);
+    if (result < 0)
+        goto fail_cdev;
+
+    result = scull_access_init(dev + SCULL_P_NR_DEVS);
+    if (result < 0) {
+        scull_p_cleanup();
+        goto fail_cdev;
+    }
+    
 
 #ifdef SCULL_DEBUG /* only when debugging */
 	scull_create_proc();
@@ -487,19 +579,29 @@ static int __init scull_init(void)
 
     printk(KERN_ALERT "Hello, world!\n");
     return 0;
+
+fail_cdev:
+    while (--i >= 0) {
+        cdev_del(&scull_devices[i].cdev);
+        scull_trim(scull_devices + i);
+    }
+    kfree(scull_devices);
+    scull_devices = NULL;
 fail_malloc:
-    unregister_chrdev_region(dev, scull_devs);
+    unregister_chrdev_region(MKDEV(scull_major, scull_minor), scull_devs);
     return result;
 }
 
 static void __exit scull_exit(void)
 {
     int i;
-    dev_t devno = MKDEV(scull_major, scull_minor);
-    
+
 #ifdef SCULL_DEBUG /* only when debugging */
 	scull_remove_proc();
 #endif
+    scull_p_cleanup();
+    /* 先清理 scullsingle/sculluid/scullwuid/scullpriv 及按 tty 克隆的设备 */
+    scull_access_cleanup();
 
     if (scull_devices) {
         for (i = 0; i < scull_devs; i++) {
@@ -507,9 +609,10 @@ static void __exit scull_exit(void)
             scull_trim(scull_devices + i);
         }
         kfree(scull_devices);
+        scull_devices = NULL;
     }
-    
-    unregister_chrdev_region(devno, scull_devs);
+
+    unregister_chrdev_region(MKDEV(scull_major, scull_minor), scull_devs);
     printk(KERN_ALERT "Goodbye, world!\n");
 }
 
