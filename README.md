@@ -7,5 +7,6 @@
 - [第四章 调试技术：procfs 与 seq_file](./doc/chapter-04.md)
 - [第五章 并发与竞争：内核同步原语全景](./doc/chapter-05.md)
 - [第六章 高级字符驱动操作：读写和设备文件控制](./doc/chapter-06.md)
+- [第十二章 PCI驱动](./doc/chapter-12.md)
 ## 基本环境
 基于qemu+linux-6.12.10+buildroot搭建的ldd3环境，具体搭建过程参考[ldd3-env](./doc/buildroot-ext4-migration.md.md)
